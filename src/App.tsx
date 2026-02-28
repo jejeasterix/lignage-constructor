@@ -92,7 +92,8 @@ export default function App() {
   const [bgImage, setBgImage] = useState(null);
   const [layers, setLayers] = useState(PRESETS.seyes.layers.map(l => ({ ...l, id: uid() })));
   const [margin, setMargin] = useState({ ...PRESETS.seyes.margin });
-  const [scale, setScale] = useState(1);
+  const [gridScale, setGridScale] = useState(1);
+  const [quality, setQuality] = useState(4);
   const [format, setFormat] = useState("A4");
   const [orientation, setOrientation] = useState("portrait");
   const [customW, setCustomW] = useState(800);
@@ -100,11 +101,19 @@ export default function App() {
   const [openLayer, setOpenLayer] = useState(null);
   const [showMargin, setShowMargin] = useState(false);
   const canvasRef = useRef(null);
+  const previewContainerRef = useRef(null);
+  const [containerSize, setContainerSize] = useState({ w: 800, h: 600 });
   const [savedPresets, setSavedPresets] = useState([]);
   const [presetName, setPresetName] = useState("");
   const [showSavePreset, setShowSavePreset] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [panelTab, setPanelTab] = useState("layers");
+
+  useEffect(() => {
+    if (format === "custom") return;
+    const { w, h } = PAGE_FORMATS[format];
+    setOrientation(w > h ? "landscape" : "portrait");
+  }, [format]);
 
   const getPageSize = useCallback(() => {
     let w, h;
@@ -114,9 +123,10 @@ export default function App() {
     return { w: Math.min(w, h), h: Math.max(w, h) };
   }, [format, orientation, customW, customH]);
 
-  const renderToCanvas = useCallback((targetCanvas, expScale) => {
+  const renderToCanvas = useCallback((targetCanvas, resScale, gScale) => {
     const { w, h } = getPageSize();
-    const s = expScale;
+    const s = resScale;
+    const g = gScale;
     const cw = w * s, ch = h * s;
     targetCanvas.width = cw; targetCanvas.height = ch;
     const ctx = targetCanvas.getContext("2d");
@@ -133,11 +143,11 @@ export default function App() {
       else if (layer.style === "dotted") ctx.setLineDash([2 * s, 3 * s]);
       else ctx.setLineDash([]);
       if (layer.axisH && layer.stepY > 0) {
-        const step = layer.stepY * s;
+        const step = layer.stepY * g * s;
         for (let y = step; y < ch; y += step) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(cw, y); ctx.stroke(); }
       }
       if (layer.axisV && layer.stepX > 0) {
-        const step = layer.stepX * s;
+        const step = layer.stepX * g * s;
         for (let x = step; x < cw; x += step) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ch); ctx.stroke(); }
       }
       ctx.restore();
@@ -149,16 +159,27 @@ export default function App() {
       if (margin.style === "dashed") ctx.setLineDash([6 * s, 4 * s]);
       else if (margin.style === "dotted") ctx.setLineDash([2 * s, 3 * s]);
       else ctx.setLineDash([]);
-      ctx.beginPath(); ctx.moveTo(margin.position * s, 0); ctx.lineTo(margin.position * s, ch); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(margin.position * g * s, 0); ctx.lineTo(margin.position * g * s, ch); ctx.stroke();
       ctx.restore();
     }
   }, [layers, bg, margin, getPageSize]);
 
   const drawCanvas = useCallback(() => {
-    if (canvasRef.current) renderToCanvas(canvasRef.current, scale);
-  }, [renderToCanvas, scale]);
+    if (canvasRef.current) renderToCanvas(canvasRef.current, 1, gridScale);
+  }, [renderToCanvas, gridScale]);
 
   useEffect(() => { drawCanvas(); }, [drawCanvas]);
+
+  useEffect(() => {
+    const el = previewContainerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      setContainerSize({ w: width, h: height });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const handleBgImage = (e) => {
     const file = e.target.files[0];
@@ -191,20 +212,22 @@ export default function App() {
 
   const generateSVG = () => {
     const { w, h } = getPageSize();
+    const g = gridScale;
     let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`;
     svg += `<rect width="${w}" height="${h}" fill="${bg}"/>`;
     for (const layer of layers) {
       if (!layer.visible) continue;
       let da = layer.style === "dashed" ? ` stroke-dasharray="6,4"` : layer.style === "dotted" ? ` stroke-dasharray="2,3"` : "";
       let op = layer.opacity < 1 ? ` opacity="${layer.opacity}"` : "";
-      if (layer.axisH && layer.stepY > 0) for (let y = layer.stepY; y < h; y += layer.stepY)
+      const stepY = layer.stepY * g, stepX = layer.stepX * g;
+      if (layer.axisH && stepY > 0) for (let y = stepY; y < h; y += stepY)
         svg += `<line x1="0" y1="${y}" x2="${w}" y2="${y}" stroke="${layer.color}" stroke-width="${layer.thickness}"${da}${op}/>`;
-      if (layer.axisV && layer.stepX > 0) for (let x = layer.stepX; x < w; x += layer.stepX)
+      if (layer.axisV && stepX > 0) for (let x = stepX; x < w; x += stepX)
         svg += `<line x1="${x}" y1="0" x2="${x}" y2="${h}" stroke="${layer.color}" stroke-width="${layer.thickness}"${da}${op}/>`;
     }
     if (margin.enabled) {
       let da = margin.style === "dashed" ? ` stroke-dasharray="6,4"` : margin.style === "dotted" ? ` stroke-dasharray="2,3"` : "";
-      svg += `<line x1="${margin.position}" y1="0" x2="${margin.position}" y2="${h}" stroke="${margin.color}" stroke-width="${margin.thickness}"${da}/>`;
+      svg += `<line x1="${margin.position * g}" y1="0" x2="${margin.position * g}" y2="${h}" stroke="${margin.color}" stroke-width="${margin.thickness}"${da}/>`;
     }
     svg += `</svg>`; return svg;
   };
@@ -222,14 +245,15 @@ export default function App() {
         pw.document.write(`</body></html>`); pw.document.close(); setTimeout(() => pw.print(), 500);
       }
     } else {
-      const ec = document.createElement("canvas"); renderToCanvas(ec, 2);
+      const ec = document.createElement("canvas"); renderToCanvas(ec, quality, gridScale);
       const mime = type === "jpg" ? "image/jpeg" : "image/png";
       ec.toBlob((b) => { const u = URL.createObjectURL(b); const a = document.createElement("a"); a.href = u; a.download = `lignage.${type}`; a.click(); URL.revokeObjectURL(u); }, mime, 0.95);
     }
   };
 
   const { w: pw, h: ph } = getPageSize();
-  const previewScale = Math.min(1, 520 / pw, 620 / ph);
+  const padding = 48;
+  const previewScale = Math.min((containerSize.w - padding) / pw, (containerSize.h - padding) / ph);
 
   const inp = {
     width: "100%", padding: "7px 10px", background: C.white, border: `1px solid ${C.border}`,
@@ -458,12 +482,17 @@ export default function App() {
                   </div>
                 </div>
                 <label style={{ fontSize: 11, color: C.textMuted, fontWeight: 600 }}>
-                  Échelle globale : <span style={{ color: C.accent, fontWeight: 700 }}>{Math.round(scale * 100)}%</span>
-                  <input type="range" min={0.25} max={3} step={0.05} value={scale} onChange={e => setScale(+e.target.value)}
+                  Échelle du quadrillage : <span style={{ color: C.accent, fontWeight: 700 }}>{Math.round(gridScale * 100)}%</span>
+                  <input type="range" min={0.25} max={3} step={0.05} value={gridScale} onChange={e => setGridScale(+e.target.value)}
+                    style={{ width: "100%", marginTop: 6, accentColor: C.accent }} />
+                </label>
+                <label style={{ fontSize: 11, color: C.textMuted, fontWeight: 600 }}>
+                  Qualité export : <span style={{ color: C.accent, fontWeight: 700 }}>x{quality} ({pw * quality} × {ph * quality} px)</span>
+                  <input type="range" min={1} max={8} step={1} value={quality} onChange={e => setQuality(+e.target.value)}
                     style={{ width: "100%", marginTop: 6, accentColor: C.accent }} />
                 </label>
                 <div style={{ fontSize: 11, color: C.textDim, background: C.surfaceAlt, padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.borderLight}` }}>
-                  Dimensions : {pw} × {ph} px (× {scale.toFixed(2)})
+                  Format : {pw} × {ph} px — Export : {pw * quality} × {ph * quality} px
                 </div>
               </div>
             )}
@@ -545,12 +574,12 @@ export default function App() {
         </div>
 
         {/* PREVIEW */}
-        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", overflow: "auto", padding: 24 }}>
+        <div ref={previewContainerRef} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", overflow: "auto", padding: 24 }}>
           <div style={{
             boxShadow: `0 4px 20px ${C.shadowMd}, 0 0 0 1px ${C.border}`,
             borderRadius: 4, overflow: "hidden", lineHeight: 0, background: C.white,
           }}>
-            <canvas ref={canvasRef} style={{ width: pw * scale * previewScale, height: ph * scale * previewScale, display: "block" }} />
+            <canvas ref={canvasRef} style={{ width: pw * previewScale, height: ph * previewScale, display: "block" }} />
           </div>
         </div>
       </div>
